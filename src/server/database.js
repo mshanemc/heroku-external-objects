@@ -4,155 +4,108 @@ const CsvReader = require('promised-csv');
 let db;
 
 // Used to connect to the Heroku Postgres database
-function connect() {
+const connect = () => {
     db = pgp({
         connectionString: process.env.DATABASE_URL,
         ssl: {
             rejectUnauthorized: false
         }
     });
-}
+};
 
 // Used to disconnect from the Heroku Postgres database.
-function disconnect() {
+const disconnect = () => {
     db.$pool.end();
-}
+};
 
 // Return a Promise that returns all folders in the "./data" directory.
-function getDataFolders() {
+const getDataFolders = () => {
     return fs.readdir('./data');
-}
+};
 
 // Return a Promise that drops a given database table.
-function dropTable(table) {
+const dropTable = (table) => {
     console.log(`- Dropping table: ${table}`);
     return db.any(`DROP TABLE IF EXISTS ${table}`).catch((error) => {
         console.log('ERROR:', error);
     });
-}
+};
 
 // Return a Promise reads the "create.sql" file from a given data folder then uses the contents to create a table
-const createTable = function (folder) {
+const createTable = async (folder) => {
     console.log(`- Creating table: ${folder}`);
-    return fs
-        .readFile(`./data/${folder}/create.sql`, 'utf-8')
-        .then((contents) => {
-            return db.any(contents).catch((error) => {
-                console.log('ERROR:', error);
-            });
-        });
+    return db.any(await fs.readFile(`./data/${folder}/create.sql`, 'utf-8'));
 };
 
 // Return a Promise to insert a CSV parsed row for a given database table
-const insertRow = function (table, columns, values) {
-    return db
-        .any('INSERT INTO $1:name($2:name) VALUES ($3:list)', [
-            table,
-            columns,
-            values
-        ])
-        .catch((error) => {
-            console.log('ERROR:', error);
-            throw error;
-        });
+const insertRow = (table, columns, values) => {
+    return db.any('INSERT INTO $1:name($2:name) VALUES ($3:list)', [
+        table,
+        columns,
+        values
+    ]);
 };
 
 // Return a Promise to the data.csv file for a given folder, then import the data into a database table
-const importData = function (folder) {
+const importData = async (folder) => {
     console.log(`- Importing data: ${folder}`);
-    let promises = [];
-    let columns = [];
-    let count = 0;
-    const reader = new CsvReader();
-    reader.on('row', (row) => {
-        count++;
-        if (count === 1) {
-            columns = row;
-        } else {
-            promises.push(insertRow(folder, columns, row));
-        }
-    });
-    return reader.read(`./data/${folder}/data.csv`).then(async () => {
-        await Promise.all(promises);
-        return true;
-    });
-};
+    let columns;
 
-// Return a Promise to cycle through each folder in ./data, delete the table, recreate it, then populate it with data.
-const resetDatabaseTables = async function () {
-    let promises = [];
-    console.log('Resetting Database Tables');
-    promises.push(
-        await fs.readdir('data').then((folders) => {
-            for (let folder of folders) {
-                promises.push(
-                    dropTable(folder)
-                        .then(() => {
-                            return createTable(folder);
-                        })
-                        .then(() => {
-                            return importData(folder);
-                        })
-                );
+    await Promise.all(
+        await new CsvReader(true).read(`./data/${folder}/data.csv`, (row) => {
+            if (columns) {
+                return insertRow(folder, columns, row);
             }
+            columns = row;
+            return null;
         })
     );
-    return Promise.all(promises);
+    return true;
+};
+
+const resetTable = async (folder) => {
+    await dropTable(folder);
+    await createTable(folder);
+    return importData(folder);
+};
+
+// Return a Promise to cycle through each folder in ./data, and reset it.
+const resetDatabaseTables = async () => {
+    console.log('Resetting Database Tables');
+    return Promise.all(
+        (await fs.readdir('data')).map(async (folder) => resetTable(folder))
+    );
 };
 
 // Return a Promise to check whether a database table exists.
-const doesTableExist = function (table) {
-    return db
-        .any(
+const doesTableExist = async (table) => {
+    return (
+        await db.any(
             'SELECT EXISTS(SELECT FROM information_schema.tables WHERE table_schema = $1 AND table_name = $2)',
             ['public', table]
         )
-        .then((data) => {
-            return data[0].exists;
-        })
-        .catch((error) => {
-            console.log('ERROR:', error);
-            throw error;
-        });
+    )[0].exists;
 };
 
 // Checks see if ANY of the database tables already exist (true if any exist, false if none exist)
-const DoDatabaseTablesExist = async function () {
-    let promises = [];
-    let i;
-    let statuses = [];
-
+const DoDatabaseTablesExist = async () => {
     connect();
-    const tables = await getDataFolders();
-    for (i = 0; i < tables.length; i++) {
-        promises.push(doesTableExist(tables[i]));
-    }
-    await Promise.all(promises)
-        .then((values) => {
-            statuses = values;
-        })
-        .catch((error) => {
-            console.log('Error: ' + error);
-        });
-    for (i = 0; i < statuses.length; i++) {
-        if (statuses[i] === true) {
-            disconnect();
-            return true;
-        }
-    }
+    const statuses = await Promise.all(
+        (await getDataFolders()).map((table) => doesTableExist(table))
+    );
     disconnect();
-    return false;
+    return statuses.some((status) => status);
 };
 
 // Gets a list of all the demo data sources (basically all the folders in ./data)
-const GetDatabaseTables = async function () {
+const GetDatabaseTables = async () => {
     const folders = await getDataFolders();
     console.log(folders);
     return folders;
 };
 
 // Resets all the demo data (deletes the tables, then recreates and repopulates them)
-const ResetDatabaseTables = async function () {
+const ResetDatabaseTables = async () => {
     connect();
     const status = await resetDatabaseTables();
     console.log('Reset Database Tables Complete');

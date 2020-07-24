@@ -11,21 +11,41 @@ app.use(compression());
 
 const PORT = process.env.PORT || 3002;
 
-app.get('/api/list', async (req, res) => {
-    console.log('Current working directory: ' + __dirname);
-    const tables = await database.GetDatabaseTables();
-    res.json({ tables: tables });
-});
+function wrapAsync(fn) {
+    return function (req, res, next) {
+        fn(req, res, next).catch(next);
+    };
+}
 
-app.get('/api/reset', async (req, res) => {
-    const status = await database.ResetDatabaseTables();
-    res.json({ status: status });
-});
+app.get(
+    '/api/list',
+    wrapAsync(async (req, res) => {
+        console.log('Current working directory: ' + __dirname);
+        const tables = await database.GetDatabaseTables();
+        res.json({ tables: tables });
+    })
+);
 
-app.get('/api/status', async (req, res) => {
-    console.log('Current working directory: ' + __dirname);
-    const status = await database.DoDatabaseTablesExist();
-    res.json({ status: status });
+app.get(
+    '/api/reset',
+    wrapAsync(async (req, res) => {
+        const status = await database.ResetDatabaseTables();
+        res.json({ status: status });
+    })
+);
+
+app.get(
+    '/api/status',
+    wrapAsync(async (req, res) => {
+        console.log('Current working directory: ' + __dirname);
+        const status = await database.DoDatabaseTablesExist();
+        res.json({ status: status });
+    })
+);
+app.use((error, req, res) => {
+    console.error(`request failed: ${req.url}`);
+    console.error(error);
+    return res.json({ error });
 });
 
 app.use(express.static(DIST_DIR));
@@ -35,8 +55,7 @@ app.use('*', (req, res) => {
 });
 
 app.listen(PORT, async () => {
-    const status = await database.DoDatabaseTablesExist();
-    if (status === false) {
+    if ((await database.DoDatabaseTablesExist()) === false) {
         console.log('✅  Initializing database tables.');
         database.ResetDatabaseTables();
     } else {
